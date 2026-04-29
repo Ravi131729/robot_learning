@@ -63,8 +63,7 @@ lerobot-train \
   --policy.type=act \
   --policy.device="${DEVICE}" \
   --policy.chunk_size=20 \
-  --policy.n_action_steps=20 \
-  --policy.dim_model=64 \
+  --policy.n_action_steps=5 \
   --policy.push_to_hub=false \
   --env.type=aloha \
   --env.task=AlohaInsertion-v0 \
@@ -74,7 +73,7 @@ lerobot-train \
   --batch_size="${BATCH_SIZE}" \
   --steps="${STEPS}" \
   --eval_freq=2000 \
-  --eval.n_episodes=1 \
+  --eval.n_episodes=20 \
   --eval.batch_size=1 \
   --save_freq=1000 \
   --save_checkpoint=true \
