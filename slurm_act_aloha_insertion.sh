@@ -73,7 +73,9 @@ lerobot-train \
   --dataset.image_transforms.enable=true \
   --batch_size="${BATCH_SIZE}" \
   --steps="${STEPS}" \
-  --eval_freq=5000 \              # less frequent eval (important)
+  --eval_freq=2000 \
+  --eval.n_episodes=1 \
+  --eval.batch_size=1 \
   --save_freq=1000 \
   --save_checkpoint=true \
   --log_freq=10 \
