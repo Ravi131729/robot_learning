@@ -1,33 +1,34 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-# --- Configuration ---
-GPU_ID=0
-DATASET_REPO_ID="lerobot/aloha_sim_insertion_human"
-OUTPUT_DIR="outputs/train/act_aloha_insertion"
-WANDB_ENABLE=false   # set to true to enable Weights & Biases logging
-NUM_EPOCHS=100
-BATCH_SIZE=8
-SEED=1000
+# Local ACT training entry point for the Aloha insertion task.
+# Override any of these from your shell before running the script.
+DEVICE="${DEVICE:-cuda}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/act_aloha_insertion_local}"
+JOB_NAME="${JOB_NAME:-act_aloha_insertion_local}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+STEPS="${STEPS:-1000}"
 
-export CUDA_VISIBLE_DEVICES=${GPU_ID}
-
-echo "Running ACT policy training on ALOHA insertion (GPU ${GPU_ID})"
-
-python lerobot/scripts/train.py \
-    policy=act \
-    env=aloha \
-    env.task=AlohaInsertion-v0 \
-    dataset_repo_id=${DATASET_REPO_ID} \
-    training.num_epochs=${NUM_EPOCHS} \
-    training.batch_size=${BATCH_SIZE} \
-    training.seed=${SEED} \
-    hydra.run.dir=${OUTPUT_DIR} \
-    wandb.enable=${WANDB_ENABLE}
-
-# --- Evaluation (uncomment to run eval after training) ---
-CHECKPOINT="${OUTPUT_DIR}/checkpoints/last/pretrained_model"
-python lerobot/scripts/eval.py \
-    -p ${CHECKPOINT} \
-    eval.n_episodes=10000 \
-    eval.batch_size=10
+lerobot-train \
+  --policy.type=act \
+  --policy.device="${DEVICE}" \
+  --policy.chunk_size=20 \
+  --policy.n_action_steps=20 \
+  --policy.dim_model=64 \
+  --policy.push_to_hub=false \
+  --env.type=aloha \
+  --env.task=AlohaInsertion-v0 \
+  --env.episode_length=400 \
+  --dataset.repo_id=lerobot/aloha_sim_insertion_human \
+  --dataset.image_transforms.enable=true \
+  --batch_size="${BATCH_SIZE}" \
+  --steps="${STEPS}" \
+  --eval_freq=500 \
+  --eval.n_episodes=1 \
+  --eval.batch_size=1 \
+  --save_freq=500 \
+  --save_checkpoint=true \
+  --log_freq=10 \
+  --wandb.enable=True \
+  --output_dir="${OUTPUT_DIR}" \
+  --job_name="${JOB_NAME}"
