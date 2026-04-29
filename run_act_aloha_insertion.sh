@@ -7,7 +7,7 @@ DEVICE="${DEVICE:-cuda}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/act_aloha_insertion_local}"
 JOB_NAME="${JOB_NAME:-act_aloha_insertion_local}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
-STEPS="${STEPS:-1000}"
+STEPS="${STEPS:-100000}"
 
 lerobot-train \
   --policy.type=act \
