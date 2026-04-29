@@ -74,7 +74,7 @@ lerobot-train \
   --steps="${STEPS}" \
   --eval_freq=2000 \
   --eval.n_episodes=20 \
-  --eval.batch_size=1 \
+  --eval.batch_size=4\
   --save_freq=1000 \
   --save_checkpoint=true \
   --log_freq=10 \
