@@ -5,7 +5,7 @@
 
 #SBATCH --ntasks 1           # number of tasks
 #SBATCH --cpus-per-task 16   # number of cpu cores per task
-#SBATCH --time 1:00:00       # walltime
+#SBATCH --time 24:00:00       # walltime
 #SBATCH --mem 64gb           # amount of memory per CPU core (Memory per Task / Cores per Task)
 #SBATCH --nodes 1            # number of nodes
 #SBATCH --gpus-per-task l40s:1 # gpu model and amount requested
