@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=robot-ablation
-#SBATCH --gpus-per-node=a100:1
+#SBATCH --gpus-per-node=a100:2
 #SBATCH --constraint=gpu_a100_80gb
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-5
+#SBATCH --array=0-5%4
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 
@@ -13,6 +13,7 @@ set -euo pipefail
 
 module load anaconda3
 source activate robot_policy
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 mkdir -p logs
 
@@ -33,6 +34,10 @@ srun python train.py \
   --preset "$PRESET" \
   --batch-size "$BATCH" \
   --num-workers 8 \
+  --pipeline-mode async \
+  --encoder-device cuda:0 \
+  --policy-device cuda:1 \
+  --prefetch-batches 4 \
   --steps 5000 \
   --eval-every 500 \
   --val-steps 20 \

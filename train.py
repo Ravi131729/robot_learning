@@ -1,6 +1,7 @@
 """Command-line training entry point for the robot policy."""
 
 import argparse
+import atexit
 import pickle
 import time
 from pathlib import Path
@@ -23,6 +24,7 @@ from robot_policy.objectives.flow_matching import flow_matching_loss
 from robot_policy.sampling.flow_sampler import sample_actions
 from robot_policy.policy import init_policy_params
 from training import create_optimizer, create_train_state, make_batch_train_step
+from training.async_features import AsyncFeatureConfig, AsyncFeatureQueue
 
 
 def tree_nbytes(tree):
@@ -191,6 +193,54 @@ def init_wandb(args, preset):
     )
 
 
+def resolve_torch_device(spec):
+    """Resolve an encoder device and fail early for an invalid GPU index."""
+    if spec == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(spec)
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"encoder device {spec!r} was requested, but CUDA is unavailable"
+            )
+        if device.index is not None and device.index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"encoder device {spec!r} was requested, but only "
+                f"{torch.cuda.device_count()} CUDA device(s) are visible"
+            )
+    return str(device)
+
+
+def resolve_jax_device(spec):
+    """Resolve the policy device from the visible JAX device list."""
+    devices = list(jax.devices())
+    accelerators = [device for device in devices if device.platform != "cpu"]
+    if spec == "auto":
+        return accelerators[0] if accelerators else devices[0]
+    if spec == "cpu":
+        cpu_devices = [device for device in devices if device.platform == "cpu"]
+        if not cpu_devices:
+            raise RuntimeError("policy device 'cpu' is unavailable")
+        return cpu_devices[0]
+
+    if ":" not in spec:
+        raise ValueError(
+            f"invalid policy device {spec!r}; use 'auto', 'cpu', or 'cuda:N'"
+        )
+    platform, index_text = spec.split(":", 1)
+    if platform not in ("cuda", "gpu") or not index_text.isdigit():
+        raise ValueError(
+            f"invalid policy device {spec!r}; use 'auto', 'cpu', or 'cuda:N'"
+        )
+    index = int(index_text)
+    if index >= len(accelerators):
+        raise RuntimeError(
+            f"policy device {spec!r} was requested, but only "
+            f"{len(accelerators)} accelerator(s) are visible to JAX: {devices}"
+        )
+    return accelerators[index]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", default=None)
@@ -211,6 +261,28 @@ def parse_args():
     parser.add_argument("--preset", choices=tuple(PRESETS), default="debug")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=("inline", "async"),
+        default="inline",
+        help="inline encoding or async two-GPU producer/consumer pipeline",
+    )
+    parser.add_argument(
+        "--encoder-device",
+        default="auto",
+        help="Torch device for frozen DINO/CLIP encoders, e.g. cuda:0",
+    )
+    parser.add_argument(
+        "--policy-device",
+        default="auto",
+        help="JAX device for policy training, e.g. cuda:1",
+    )
+    parser.add_argument(
+        "--prefetch-batches",
+        type=int,
+        default=4,
+        help="async feature-queue capacity in batches",
+    )
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--val-split", default="val_sim")
     parser.add_argument("--val-steps", type=int, default=10)
@@ -310,6 +382,34 @@ def encode_abc_batch_with_timings(raw_batch, dino, clip):
     return model_batch, timings
 
 
+def host_batch_to_policy_batch(host_batch, device, with_timings=False):
+    """Move a producer batch from host memory onto the policy device."""
+    timings = {}
+    start = time.perf_counter()
+    model_batch = PolicyBatch(
+        dino_tokens=jax.numpy.asarray(host_batch["dino_tokens"]),
+        state=jax.numpy.asarray(host_batch["state"], dtype=jax.numpy.float32),
+        task=jax.numpy.asarray(host_batch["task"]),
+        actions=jax.numpy.asarray(host_batch["actions"], dtype=jax.numpy.float32),
+    ).validate()
+    model_batch = PolicyBatch(
+        dino_tokens=jax.device_put(model_batch.dino_tokens, device),
+        state=jax.device_put(model_batch.state, device),
+        task=jax.device_put(model_batch.task, device),
+        actions=jax.device_put(model_batch.actions, device),
+    )
+    for value in (
+        model_batch.dino_tokens,
+        model_batch.state,
+        model_batch.task,
+        model_batch.actions,
+    ):
+        value.block_until_ready()
+    if with_timings:
+        timings["CPU-to-GPU batch preparation"] = time.perf_counter() - start
+    return model_batch, timings
+
+
 @jax.jit
 def eval_step(params, dino_tokens, state, task, actions, key):
     return flow_matching_loss(
@@ -363,7 +463,8 @@ def main():
         raise ValueError("--eval-every must be non-negative")
     if args.log_every < 1:
         raise ValueError("--log-every must be at least 1")
-
+    if args.prefetch_batches < 1:
+        raise ValueError("--prefetch-batches must be at least 1")
     default_cache = Path.home() / "robot_learning" / "cache"
     args.data_root = str(Path(args.data_root) if args.data_root else default_cache)
     args.dino_model = str(
@@ -379,38 +480,65 @@ def main():
 
     preset = get_preset(args.preset)
     wandb_run = init_wandb(args, preset)
-    torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch_device = resolve_torch_device(args.encoder_device)
+    policy_device = resolve_jax_device(args.policy_device)
     print(f"JAX devices: {jax.devices()}")
-    print(f"Torch device: {torch_device}")
-    print(f"Loading ABC official loader for {args.split} from {args.data_root}")
-    loader = create_abc_loader(
-        args.data_root,
-        split=args.split,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        abc_root=args.abc_root,
-        seed=args.seed,
-    )
-    print(
-        f"ABC loader batches: {len(loader)}, "
-        f"workers: {args.num_workers}, pinned memory: true"
-    )
-    if args.memory:
-        print_memory("dataset", params=None)
+    print(f"Encoder device: {torch_device}")
+    print(f"Policy device: {policy_device}")
+    loader = None
+    dino = None
+    clip = None
+    feature_queue = None
+    async_config = None
+    if args.pipeline_mode == "async":
+        print(
+            f"Starting async feature producer: encoder={torch_device}, "
+            f"policy={policy_device}, queue={args.prefetch_batches} batches"
+        )
+        async_config = AsyncFeatureConfig(
+            data_root=args.data_root,
+            dino_model=args.dino_model,
+            clip_cache=args.clip_cache,
+            split=args.split,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            encoder_device=torch_device,
+            prefetch_batches=args.prefetch_batches,
+            abc_root=args.abc_root,
+            seed=args.seed,
+        )
+        feature_queue = AsyncFeatureQueue(async_config).start()
+        atexit.register(feature_queue.close)
+    else:
+        print(f"Loading ABC official loader for {args.split} from {args.data_root}")
+        loader = create_abc_loader(
+            args.data_root,
+            split=args.split,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            abc_root=args.abc_root,
+            seed=args.seed,
+        )
+        print(
+            f"ABC loader batches: {len(loader)}, "
+            f"workers: {args.num_workers}, pinned memory: true"
+        )
+        if args.memory:
+            print_memory("dataset", params=None)
 
-    dino = HFDinoV3Encoder.from_pretrained(
-        args.dino_model,
-        device=torch_device,
-    )
-    if args.memory:
-        print_memory("after DINO", dino=dino)
-    clip = load_abc_clip_text_embedder(
-        abc_root=args.abc_root,
-        cache_dir=args.clip_cache,
-        device=torch_device,
-    )
-    if args.memory:
-        print_memory("after CLIP", dino=dino, clip=clip)
+        dino = HFDinoV3Encoder.from_pretrained(
+            args.dino_model,
+            device=torch_device,
+        )
+        if args.memory:
+            print_memory("after DINO", dino=dino)
+        clip = load_abc_clip_text_embedder(
+            abc_root=args.abc_root,
+            cache_dir=args.clip_cache,
+            device=torch_device,
+        )
+        if args.memory:
+            print_memory("after CLIP", dino=dino, clip=clip)
 
     key = jax.random.PRNGKey(args.seed)
     model_key, train_key = jax.random.split(key)
@@ -420,12 +548,30 @@ def main():
     optimizer = create_optimizer(args.learning_rate, args.weight_decay)
     train_state = create_train_state(params, optimizer)
     train_step = make_batch_train_step(optimizer)
-    loader_iterator = iter(loader)
+    loader_iterator = iter(loader) if loader is not None else None
     losses = []
     update_times = []
     val_loader = None
     best_val_loss = float("inf")
     measure_timings = args.timing or wandb_run is not None
+
+    validation_dino = dino
+    validation_clip = clip
+
+    def ensure_validation_encoders():
+        nonlocal validation_dino, validation_clip
+        if validation_dino is None:
+            print(f"Loading validation encoders on {torch_device}")
+            validation_dino = HFDinoV3Encoder.from_pretrained(
+                args.dino_model,
+                device=torch_device,
+            )
+            validation_clip = load_abc_clip_text_embedder(
+                abc_root=args.abc_root,
+                cache_dir=args.clip_cache,
+                device=torch_device,
+            )
+        return validation_dino, validation_clip
 
     def get_val_loader():
         return create_abc_loader(
@@ -438,33 +584,58 @@ def main():
             train=False,
         )
 
+    def pause_async_producer():
+        nonlocal feature_queue
+        if feature_queue is not None:
+            feature_queue.close()
+            feature_queue = None
+
+    def resume_async_producer():
+        nonlocal feature_queue
+        if async_config is not None:
+            feature_queue = AsyncFeatureQueue(async_config).start()
+            atexit.register(feature_queue.close)
+
     print(
         f"Training preset={preset.name}, depth={preset.dit_depth}, "
         f"batch_size={args.batch_size}, steps={args.steps}"
     )
     for step in range(args.steps):
         load_start = time.perf_counter()
-        try:
-            raw_batch = next(loader_iterator)
-        except StopIteration:
-            loader_iterator = iter(loader)
-            raw_batch = next(loader_iterator)
-        load_time = time.perf_counter() - load_start
-        if measure_timings:
-            model_batch, pipeline_timings = encode_official_batch(
-                raw_batch,
-                dino,
-                clip,
-                device=jax.devices()[0],
+        if args.pipeline_mode == "async":
+            queued = feature_queue.get(timeout=600)
+            load_time = time.perf_counter() - load_start
+            model_batch, transfer_timings = host_batch_to_policy_batch(
+                queued["batch"],
+                device=policy_device,
                 with_timings=True,
             )
+            pipeline_timings = dict(queued["timings"])
+            pipeline_timings.update(transfer_timings)
+            pipeline_timings["feature queue wait"] = load_time
         else:
-            model_batch, _ = encode_official_batch(
-                raw_batch,
-                dino,
-                clip,
-                device=jax.devices()[0],
-            )
+            try:
+                raw_batch = next(loader_iterator)
+            except StopIteration:
+                loader_iterator = iter(loader)
+                raw_batch = next(loader_iterator)
+            load_time = time.perf_counter() - load_start
+            if measure_timings:
+                model_batch, pipeline_timings = encode_official_batch(
+                    raw_batch,
+                    dino,
+                    clip,
+                    device=policy_device,
+                    with_timings=True,
+                )
+            else:
+                model_batch, _ = encode_official_batch(
+                    raw_batch,
+                    dino,
+                    clip,
+                    device=policy_device,
+                )
+                pipeline_timings = {}
         step_key = jax.random.fold_in(train_key, step)
 
         update_start = time.perf_counter()
@@ -515,14 +686,17 @@ def main():
             and ((step + 1) % args.eval_every == 0 or step + 1 == args.steps)
         )
         if should_evaluate:
+            if args.pipeline_mode == "async":
+                pause_async_producer()
             if val_loader is None:
                 val_loader = get_val_loader()
+            validation_dino, validation_clip = ensure_validation_encoders()
             val_loss, _ = evaluate_loader(
                 train_state.params,
                 val_loader,
-                dino,
-                clip,
-                jax.devices()[0],
+                validation_dino,
+                validation_clip,
+                policy_device,
                 jax.random.fold_in(train_key, 100000 + step),
                 args.val_steps,
             )
@@ -537,6 +711,8 @@ def main():
                     {"validation/flow_matching_loss": val_loss},
                     step=step + 1,
                 )
+            if args.pipeline_mode == "async":
+                resume_async_producer()
 
     checkpoint_path = Path(args.checkpoint_dir) / f"{preset.name}_latest.pkl"
     save_checkpoint(checkpoint_path, train_state, args, losses)
@@ -548,14 +724,17 @@ def main():
         )
 
     print(f"Running final validation on {args.val_split} ({args.val_steps} batches)")
+    if args.pipeline_mode == "async":
+        pause_async_producer()
     if val_loader is None:
         val_loader = get_val_loader()
+    validation_dino, validation_clip = ensure_validation_encoders()
     final_val_loss, sample_batch_for_inference = evaluate_loader(
         train_state.params,
         val_loader,
-        dino,
-        clip,
-        jax.devices()[0],
+        validation_dino,
+        validation_clip,
+        policy_device,
         jax.random.fold_in(train_key, 300000),
         args.val_steps,
     )
