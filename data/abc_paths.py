@@ -1,6 +1,7 @@
-"""Runtime discovery for the upstream ABC checkout.
+"""Runtime discovery for the vendored ABC loader.
 
-Upstream project: https://github.com/amazon-far/abc
+The vendored files are copied from https://github.com/amazon-far/abc and are
+kept under ``third_party/abc_minimal`` so this repository is standalone.
 """
 
 import importlib.util
@@ -9,8 +10,10 @@ from pathlib import Path
 
 
 def resolve_abc_root(abc_root=None):
-    """Find the local checkout without hard-coding a user-specific path."""
+    """Find the vendored ABC package or an explicitly supplied override."""
     candidates = []
+    vendored_root = Path(__file__).resolve().parents[1] / "third_party"
+    candidates.append(vendored_root)
     if abc_root:
         candidates.append(Path(abc_root))
     env_root = os.environ.get("ABC_REPO_ROOT")
@@ -26,7 +29,4 @@ def resolve_abc_root(abc_root=None):
         if (candidate / "abc_minimal").is_dir():
             return candidate
 
-    raise FileNotFoundError(
-        "ABC checkout not found. Clone https://github.com/amazon-far/abc "
-        "and set ABC_REPO_ROOT to its local path."
-    )
+    raise FileNotFoundError("vendored ABC loader package was not found")

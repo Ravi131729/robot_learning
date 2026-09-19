@@ -13,9 +13,9 @@ The local dataset is expected at:
 /home/ravi/robot_learning/cache
 ```
 
-The cache is ignored by Git. Training uses ABC's official
+The cache is ignored by Git. Training uses a vendored copy of ABC's official
 `EpisodeDataset`, `collate`, worker-based `DataLoader`, normalization, and
-TorchCodec video decoding from the upstream repository:
+TorchCodec video decoding. The copied source originated from:
 
 ```text
 https://github.com/amazon-far/abc
@@ -28,12 +28,8 @@ PyTorch batches and this repository's JAX policy.
 ## Environment
 
 Use the `base` environment with JAX CUDA, PyTorch CUDA, Transformers, Optax,
-TorchCodec, and a local checkout of the upstream ABC repository.
-
-```bash
-git clone https://github.com/amazon-far/abc.git
-export ABC_REPO_ROOT=/path/to/abc
-```
+and TorchCodec. No external ABC checkout is required at runtime; the required
+ABC loader files are included under `third_party/abc_minimal/`.
 
 TorchCodec must match PyTorch. For the current PyTorch 2.10 installation:
 
@@ -97,7 +93,7 @@ repository owns the JAX policy architecture and its training adapters.
 
 ## ABC attribution
 
-This project uses and adapts the official ABC data-loading interfaces from
+This project includes and adapts the official ABC data-loading interfaces from
 [amazon-far/abc](https://github.com/amazon-far/abc), including its
 `EpisodeDataset`, collation, normalization, and TorchCodec video-decoding
 path. Please cite the ABC project:
@@ -110,3 +106,6 @@ path. Please cite the ABC project:
   url = {https://github.com/amazon-far/abc}
 }
 ```
+
+The copied source files are kept in `third_party/abc_minimal/` and the
+upstream license is preserved in `third_party/ABC_LICENSE`.

@@ -1,7 +1,6 @@
-"""Thin bridge to ABC's official worker-based dataloader.
+"""Thin bridge to the vendored ABC worker-based dataloader.
 
-This module intentionally imports ``EpisodeDataset`` and ``collate`` from the
-upstream ABC checkout instead of reimplementing them. ABC source repository:
+The imported files are copied from the Amazon FAR ABC repository:
 https://github.com/amazon-far/abc
 """
 
