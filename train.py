@@ -193,11 +193,11 @@ def init_wandb(args, preset):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default="/home/ravi/robot_learning/cache")
+    parser.add_argument("--data-root", default=None)
     parser.add_argument("--split", default="train_sim")
     parser.add_argument(
         "--dino-model",
-        default="/home/ravi/robot_learning/cache/dinov3-vitb16-pretrain-lvd1689m",
+        default=None,
     )
     parser.add_argument(
         "--abc-root",
@@ -206,7 +206,7 @@ def parse_args():
     )
     parser.add_argument(
         "--clip-cache",
-        default="/home/ravi/robot_learning/cache/clip",
+        default=None,
     )
     parser.add_argument("--preset", choices=tuple(PRESETS), default="debug")
     parser.add_argument("--batch-size", type=int, default=1)
@@ -363,6 +363,19 @@ def main():
         raise ValueError("--eval-every must be non-negative")
     if args.log_every < 1:
         raise ValueError("--log-every must be at least 1")
+
+    default_cache = Path.home() / "robot_learning" / "cache"
+    args.data_root = str(Path(args.data_root) if args.data_root else default_cache)
+    args.dino_model = str(
+        Path(args.dino_model)
+        if args.dino_model
+        else Path(args.data_root) / "dinov3-vitb16-pretrain-lvd1689m"
+    )
+    args.clip_cache = str(
+        Path(args.clip_cache)
+        if args.clip_cache
+        else Path(args.data_root) / "clip"
+    )
 
     preset = get_preset(args.preset)
     wandb_run = init_wandb(args, preset)

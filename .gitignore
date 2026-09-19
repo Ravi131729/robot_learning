@@ -2,6 +2,7 @@
 *.txt
 **/wandb
 **/checkpoints
+logs/
 *.pyc
 
 # Local ABC/simulation datasets and generated cache files

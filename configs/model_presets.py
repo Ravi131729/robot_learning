@@ -23,6 +23,11 @@ SMALL_PRESET = RobotPolicyPreset(
     dit_depth=8,
 )
 
+MEDIUM_PRESET = RobotPolicyPreset(
+    name="medium",
+    dit_depth=16,
+)
+
 FULL_PRESET = RobotPolicyPreset(
     name="full",
     dit_depth=DIT_DEPTH,
@@ -32,6 +37,7 @@ FULL_PRESET = RobotPolicyPreset(
 PRESETS = {
     DEBUG_PRESET.name: DEBUG_PRESET,
     SMALL_PRESET.name: SMALL_PRESET,
+    MEDIUM_PRESET.name: MEDIUM_PRESET,
     FULL_PRESET.name: FULL_PRESET,
 }
 
