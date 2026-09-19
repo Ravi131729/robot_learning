@@ -1,5 +1,6 @@
-"""Data structures and preprocessing utilities for robot policies."""
+"""Data modules for robot-policy training.
 
-from data.types import PolicyBatch
-
-__all__ = ["PolicyBatch"]
+Submodules are intentionally not imported here. Some adapters depend on
+optional packages such as PyAV, PyTorch, or Transformers, so callers should
+import the specific module they need.
+"""

@@ -64,3 +64,20 @@ def make_train_step(optimizer):
         return new_train_state, loss
 
     return train_step
+
+
+def make_batch_train_step(optimizer):
+    """Build a train step that accepts a `data.types.PolicyBatch`."""
+    compiled_step = make_train_step(optimizer)
+
+    def train_step(train_state, batch, key):
+        return compiled_step(
+            train_state,
+            batch.dino_tokens,
+            batch.state,
+            batch.task,
+            batch.actions,
+            key,
+        )
+
+    return train_step

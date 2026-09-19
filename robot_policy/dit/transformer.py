@@ -9,14 +9,17 @@ from robot_policy.dit.block import dit_block, init_dit_block
 from robot_policy.dit.output import final_layer
 
 
-def init_dit_params(key):
+def init_dit_params(key, depth=DIT_DEPTH):
     """Initialize all DiT blocks and the final output layer."""
-    keys = jax.random.split(key, DIT_DEPTH + 2)
+    if depth < 1:
+        raise ValueError("DiT depth must be at least 1")
+
+    keys = jax.random.split(key, depth + 2)
 
     return {
         "blocks": [
             init_dit_block(keys[i])
-            for i in range(DIT_DEPTH)
+            for i in range(depth)
         ],
         "final_ada_w": init_weight(keys[-2], DIT_DIM, 2 * DIT_DIM),
         "final_ada_b": jnp.zeros(2 * DIT_DIM),

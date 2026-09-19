@@ -11,7 +11,7 @@ NUM_CAMERAS = 3
 # Diffusion Transformer
 DIT_DIM = 1536
 DIT_HEADS = 24
-DIT_DEPTH = 32
+DIT_DEPTH = 16
 DIT_MLP_DIM = 4 * DIT_DIM
 
 # Inputs and outputs

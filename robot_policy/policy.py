@@ -2,6 +2,7 @@
 
 import jax
 
+from configs.robot_policy_config import DIT_DEPTH
 from robot_policy.action.embedding import action_embed, init_action_params
 from robot_policy.conditioning.condition import (
     condition_embed,
@@ -12,7 +13,7 @@ from robot_policy.dit.transformer import dit_forward, init_dit_params
 from robot_policy.vision.encoder import encode_vision_for_dit, init_vision_params
 
 
-def init_policy_params(key):
+def init_policy_params(key, dit_depth=DIT_DEPTH):
     """Initialize all parameter groups used by the robot policy."""
     vision_key, time_key, condition_key, action_key, dit_key = jax.random.split(
         key, 5
@@ -23,7 +24,7 @@ def init_policy_params(key):
         "time": init_time_params(time_key),
         "condition": init_condition_params(condition_key),
         "action": init_action_params(action_key),
-        "dit": init_dit_params(dit_key),
+        "dit": init_dit_params(dit_key, depth=dit_depth),
     }
 
 
