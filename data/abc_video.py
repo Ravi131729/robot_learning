@@ -3,7 +3,7 @@
 The preferred backend follows ABC's ``abc_minimal.dataloader.decode_frame``
 implementation and uses an indexed ``torchcodec.VideoDecoder``. PyAV is kept
 as a fallback so dataset inspection still works before torchcodec is
-installed. ABC source: ``/home/ravi/abc/abc_minimal/dataloader.py``.
+installed. ABC source: https://github.com/amazon-far/abc
 """
 
 from dataclasses import dataclass, field

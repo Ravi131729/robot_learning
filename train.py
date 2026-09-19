@@ -127,7 +127,11 @@ def parse_args():
         "--dino-model",
         default="/home/ravi/robot_learning/cache/dinov3-vitb16-pretrain-lvd1689m",
     )
-    parser.add_argument("--abc-root", default="/home/ravi/abc")
+    parser.add_argument(
+        "--abc-root",
+        default=None,
+        help="local ABC checkout; defaults to ABC_REPO_ROOT or installed package",
+    )
     parser.add_argument(
         "--clip-cache",
         default="/home/ravi/robot_learning/cache/clip",

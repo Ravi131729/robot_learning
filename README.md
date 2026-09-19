@@ -15,11 +15,10 @@ The local dataset is expected at:
 
 The cache is ignored by Git. Training uses ABC's official
 `EpisodeDataset`, `collate`, worker-based `DataLoader`, normalization, and
-TorchCodec video decoding from:
+TorchCodec video decoding from the upstream repository:
 
 ```text
-/home/ravi/abc/abc_minimal/dataloader.py
-/home/ravi/abc/abc_minimal/preprocess.py
+https://github.com/amazon-far/abc
 ```
 
 The files in `data/abc_official_loader.py` and
@@ -29,7 +28,12 @@ PyTorch batches and this repository's JAX policy.
 ## Environment
 
 Use the `base` environment with JAX CUDA, PyTorch CUDA, Transformers, Optax,
-TorchCodec, and the ABC checkout available at `/home/ravi/abc`.
+TorchCodec, and a local checkout of the upstream ABC repository.
+
+```bash
+git clone https://github.com/amazon-far/abc.git
+export ABC_REPO_ROOT=/path/to/abc
+```
 
 TorchCodec must match PyTorch. For the current PyTorch 2.10 installation:
 
@@ -90,3 +94,19 @@ train.py       Command-line training, validation, timing, and checkpoints
 
 ABC remains the source of truth for dataset semantics and loading. This
 repository owns the JAX policy architecture and its training adapters.
+
+## ABC attribution
+
+This project uses and adapts the official ABC data-loading interfaces from
+[amazon-far/abc](https://github.com/amazon-far/abc), including its
+`EpisodeDataset`, collation, normalization, and TorchCodec video-decoding
+path. Please cite the ABC project:
+
+```bibtex
+@misc{abc2026,
+  title = {Scalable Behavior Cloning with Open Data, Training, and Evaluation},
+  author = {Allshire et al.},
+  year = {2026},
+  url = {https://github.com/amazon-far/abc}
+}
+```

@@ -1,8 +1,8 @@
 """Thin bridge to ABC's official worker-based dataloader.
 
 This module intentionally imports ``EpisodeDataset`` and ``collate`` from the
-ABC checkout instead of reimplementing them. ABC source:
-``/home/ravi/abc/abc_minimal/dataloader.py``.
+upstream ABC checkout instead of reimplementing them. ABC source repository:
+https://github.com/amazon-far/abc
 """
 
 from pathlib import Path
@@ -13,9 +13,11 @@ from functools import partial
 import torch
 from torch.utils.data import DataLoader
 
+from data.abc_paths import resolve_abc_root
+
 
 def _add_abc_to_path(abc_root):
-    abc_root = Path(abc_root)
+    abc_root = resolve_abc_root(abc_root)
     root = str(abc_root)
     if root not in sys.path:
         sys.path.insert(0, root)
@@ -37,7 +39,7 @@ def create_abc_loader(
     split="train_sim",
     batch_size=1,
     num_workers=4,
-    abc_root="/home/ravi/abc",
+    abc_root=None,
     seed=0,
     train=True,
 ):
