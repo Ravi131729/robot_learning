@@ -3,3 +3,6 @@
 **/wandb
 **/checkpoints
 *.pyc
+
+# Local ABC/simulation datasets and generated cache files
+/cache/
