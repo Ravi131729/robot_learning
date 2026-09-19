@@ -60,9 +60,26 @@ python train.py \
   --num-workers 4 \
   --steps 1000 \
   --val-steps 20 \
+  --eval-every 500 \
   --sample-steps 10 \
   --timing \
   --memory
+```
+
+To log training, validation, timing, throughput, parameter, and memory
+metrics to Weights & Biases:
+
+```bash
+wandb login
+python train.py \
+  --preset small \
+  --batch-size 4 \
+  --num-workers 4 \
+  --steps 1000 \
+  --eval-every 500 \
+  --val-steps 20 \
+  --wandb \
+  --wandb-project robot-learning-policy
 ```
 
 Presets are:

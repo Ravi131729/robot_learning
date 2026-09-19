@@ -119,6 +119,78 @@ def print_memory(label, dino=None, clip=None, params=None):
         print(f"  component sizes: {detail}")
 
 
+def collect_memory_metrics(dino=None, clip=None, params=None):
+    """Collect numeric memory metrics suitable for W&B."""
+    import os
+
+    metrics = {}
+    try:
+        import psutil
+        metrics["memory/cpu_rss_gib"] = gibibytes(
+            psutil.Process(os.getpid()).memory_info().rss
+        )
+    except ImportError:
+        pass
+
+    if torch.cuda.is_available():
+        metrics.update({
+            "memory/torch_allocated_gib": gibibytes(torch.cuda.memory_allocated()),
+            "memory/torch_reserved_gib": gibibytes(torch.cuda.memory_reserved()),
+            "memory/torch_peak_allocated_gib": gibibytes(
+                torch.cuda.max_memory_allocated()
+            ),
+        })
+
+    for device in jax.devices():
+        if device.platform != "cpu":
+            try:
+                stats = device.memory_stats() or {}
+                current = stats.get("bytes_in_use", stats.get("bytes_used"))
+                limit = stats.get("bytes_limit")
+                if current is not None:
+                    metrics["memory/jax_allocated_gib"] = gibibytes(current)
+                if limit is not None:
+                    metrics["memory/jax_limit_gib"] = gibibytes(limit)
+            except Exception:
+                pass
+            break
+
+    if dino is not None:
+        metrics["params/dino_millions"] = sum(
+            parameter.numel() for parameter in dino.model.parameters()
+        ) / 1e6
+    if clip is not None and hasattr(clip, "encoder") and hasattr(clip.encoder, "model"):
+        metrics["params/clip_millions"] = sum(
+            parameter.numel() for parameter in clip.encoder.model.parameters()
+        ) / 1e6
+    if params is not None:
+        metrics["params/policy_millions"] = tree_nbytes(params) / 4e6
+    return metrics
+
+
+def init_wandb(args, preset):
+    if not args.wandb:
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError(
+            "W&B logging requires a working wandb installation; "
+            "run `python -m pip install -U wandb protobuf<6`."
+        ) from exc
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        mode=args.wandb_mode,
+        config={
+            **vars(args),
+            "preset_name": preset.name,
+            "dit_depth": preset.dit_depth,
+        },
+    )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", default="/home/ravi/robot_learning/cache")
@@ -142,6 +214,12 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--val-split", default="val_sim")
     parser.add_argument("--val-steps", type=int, default=10)
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=500,
+        help="run validation every N training steps; 0 disables periodic evaluation",
+    )
     parser.add_argument("--sample-steps", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
@@ -158,6 +236,11 @@ def parse_args():
         help="report CPU/GPU memory snapshots during setup and training",
     )
     parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument("--wandb", action="store_true", help="enable W&B logging")
+    parser.add_argument("--wandb-project", default="robot-learning-policy")
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
     return parser.parse_args()
 
 
@@ -227,16 +310,62 @@ def encode_abc_batch_with_timings(raw_batch, dino, clip):
     return model_batch, timings
 
 
+@jax.jit
+def eval_step(params, dino_tokens, state, task, actions, key):
+    return flow_matching_loss(
+        params,
+        dino_tokens,
+        state,
+        task,
+        actions,
+        key,
+    )
+
+
+def evaluate_loader(params, loader, dino, clip, device, key, num_steps):
+    """Evaluate flow loss on a fixed number of validation batches."""
+    iterator = iter(loader)
+    losses = []
+    last_batch = None
+    for step in range(num_steps):
+        try:
+            raw_batch = next(iterator)
+        except StopIteration:
+            iterator = iter(loader)
+            raw_batch = next(iterator)
+        model_batch, _ = encode_official_batch(
+            raw_batch,
+            dino,
+            clip,
+            device=device,
+        )
+        last_batch = model_batch
+        loss = eval_step(
+            params,
+            model_batch.dino_tokens,
+            model_batch.state,
+            model_batch.task,
+            model_batch.actions,
+            jax.random.fold_in(key, step),
+        )
+        loss.block_until_ready()
+        losses.append(float(loss))
+    return float(np.mean(losses)), last_batch
+
+
 def main():
     args = parse_args()
     if args.batch_size < 1 or args.steps < 1:
         raise ValueError("--batch-size and --steps must be at least 1")
     if args.val_steps < 1 or args.sample_steps < 1:
         raise ValueError("--val-steps and --sample-steps must be at least 1")
+    if args.eval_every < 0:
+        raise ValueError("--eval-every must be non-negative")
     if args.log_every < 1:
         raise ValueError("--log-every must be at least 1")
 
     preset = get_preset(args.preset)
+    wandb_run = init_wandb(args, preset)
     torch_device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"JAX devices: {jax.devices()}")
     print(f"Torch device: {torch_device}")
@@ -281,6 +410,20 @@ def main():
     loader_iterator = iter(loader)
     losses = []
     update_times = []
+    val_loader = None
+    best_val_loss = float("inf")
+    measure_timings = args.timing or wandb_run is not None
+
+    def get_val_loader():
+        return create_abc_loader(
+            args.data_root,
+            split=args.val_split,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            abc_root=args.abc_root,
+            seed=args.seed,
+            train=False,
+        )
 
     print(
         f"Training preset={preset.name}, depth={preset.dit_depth}, "
@@ -294,7 +437,7 @@ def main():
             loader_iterator = iter(loader)
             raw_batch = next(loader_iterator)
         load_time = time.perf_counter() - load_start
-        if args.timing:
+        if measure_timings:
             model_batch, pipeline_timings = encode_official_batch(
                 raw_batch,
                 dino,
@@ -319,6 +462,24 @@ def main():
         update_times.append(update_time)
         loss_value = float(loss)
         losses.append(loss_value)
+        if wandb_run is not None:
+            metrics = {
+                "train/loss": loss_value,
+                "train/step_time_sec": update_time,
+                "train/updates_per_sec": 1.0 / update_time,
+                "train/samples_per_sec": args.batch_size / update_time,
+                "train/learning_rate": args.learning_rate,
+            }
+            if measure_timings:
+                metrics["timing/dataset_video_sec"] = load_time
+                for stage, duration in pipeline_timings.items():
+                    key = stage.lower().replace(" ", "_").replace("-", "")
+                    metrics[f"timing/{key}_sec"] = duration
+            if args.memory or wandb_run is not None:
+                metrics.update(
+                    collect_memory_metrics(dino, clip, train_state.params)
+                )
+            wandb_run.log(metrics, step=step + 1)
         if args.memory and step == 0:
             print_memory("after first update", dino=dino, clip=clip, params=train_state.params)
 
@@ -336,6 +497,34 @@ def main():
             else:
                 print(f"  JAX update: {update_time:.4f}s")
 
+        should_evaluate = (
+            args.eval_every > 0
+            and ((step + 1) % args.eval_every == 0 or step + 1 == args.steps)
+        )
+        if should_evaluate:
+            if val_loader is None:
+                val_loader = get_val_loader()
+            val_loss, _ = evaluate_loader(
+                train_state.params,
+                val_loader,
+                dino,
+                clip,
+                jax.devices()[0],
+                jax.random.fold_in(train_key, 100000 + step),
+                args.val_steps,
+            )
+            print(f"Validation step={step + 1}: flow-matching loss={val_loss:.6f}")
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_path = Path(args.checkpoint_dir) / f"{preset.name}_best.pkl"
+                save_checkpoint(best_path, train_state, args, losses)
+                print(f"Saved best checkpoint: {best_path}")
+            if wandb_run is not None:
+                wandb_run.log(
+                    {"validation/flow_matching_loss": val_loss},
+                    step=step + 1,
+                )
+
     checkpoint_path = Path(args.checkpoint_dir) / f"{preset.name}_latest.pkl"
     save_checkpoint(checkpoint_path, train_state, args, losses)
     print(f"Saved checkpoint: {checkpoint_path}")
@@ -345,56 +534,24 @@ def main():
             f"{np.mean(update_times[1:]):.4f}s"
         )
 
-    print(f"Running validation on {args.val_split} ({args.val_steps} batches)")
-    val_loader = create_abc_loader(
-        args.data_root,
-        split=args.val_split,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        abc_root=args.abc_root,
-        seed=args.seed,
-        train=False,
+    print(f"Running final validation on {args.val_split} ({args.val_steps} batches)")
+    if val_loader is None:
+        val_loader = get_val_loader()
+    final_val_loss, sample_batch_for_inference = evaluate_loader(
+        train_state.params,
+        val_loader,
+        dino,
+        clip,
+        jax.devices()[0],
+        jax.random.fold_in(train_key, 300000),
+        args.val_steps,
     )
-    val_iterator = iter(val_loader)
-
-    @jax.jit
-    def eval_step(params, dino_tokens, state, task, actions, key):
-        return flow_matching_loss(
-            params,
-            dino_tokens,
-            state,
-            task,
-            actions,
-            key,
+    print(f"Final validation flow-matching loss: {final_val_loss:.6f}")
+    if wandb_run is not None:
+        wandb_run.log(
+            {"validation/final_flow_matching_loss": final_val_loss},
+            step=args.steps,
         )
-
-    validation_losses = []
-    sample_batch_for_inference = None
-    for step in range(args.val_steps):
-        try:
-            val_raw_batch = next(val_iterator)
-        except StopIteration:
-            val_iterator = iter(val_loader)
-            val_raw_batch = next(val_iterator)
-        val_batch, _ = encode_official_batch(
-            val_raw_batch,
-            dino,
-            clip,
-            device=jax.devices()[0],
-        )
-        sample_batch_for_inference = val_batch
-        val_loss = eval_step(
-            train_state.params,
-            val_batch.dino_tokens,
-            val_batch.state,
-            val_batch.task,
-            val_batch.actions,
-            jax.random.fold_in(train_key, 100000 + step),
-        )
-        val_loss.block_until_ready()
-        validation_losses.append(float(val_loss))
-
-    print(f"Validation flow-matching loss: {np.mean(validation_losses):.6f}")
 
     sampled_actions = sample_actions(
         sample_batch_for_inference.dino_tokens,
@@ -413,6 +570,16 @@ def main():
         f"range=[{float(sampled_actions.min()):.3f}, "
         f"{float(sampled_actions.max()):.3f}]"
     )
+    if wandb_run is not None:
+        wandb_run.log(
+            {
+                "inference/action_min": float(sampled_actions.min()),
+                "inference/action_max": float(sampled_actions.max()),
+                "inference/action_mean": float(sampled_actions.mean()),
+            },
+            step=args.steps,
+        )
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
