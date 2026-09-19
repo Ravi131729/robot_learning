@@ -2,3 +2,4 @@
 *.txt
 **/wandb
 **/checkpoints
+*.pyc
