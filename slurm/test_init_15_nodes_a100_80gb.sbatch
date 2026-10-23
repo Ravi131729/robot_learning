@@ -16,6 +16,15 @@ module load anaconda3
 source activate robot_policy
 cd "$HOME/robot_learning"
 
+# Prefer this environment's C++ runtime over the anaconda3 module's runtime.
+# FFmpeg 6/ICU requires GLIBCXX_3.4.30, absent from the module's libstdc++.
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+if [[ ! -r "${CONDA_PREFIX}/lib/libstdc++.so.6" ]]; then
+  echo "Missing environment C++ runtime. Run: conda install -n robot_policy -c conda-forge 'libstdcxx-ng>=12' 'libgcc-ng>=12'" >&2
+  exit 1
+fi
+export LD_PRELOAD="${CONDA_PREFIX}/lib/libstdc++.so.6${LD_PRELOAD:+:${LD_PRELOAD}}"
+
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export PYTHONDONTWRITEBYTECODE=1
 export WANDB_MODE=online
@@ -32,6 +41,8 @@ export TRANSFORMERS_OFFLINE=1
 srun --kill-on-bad-exit=1 python -u -c '
 import os
 import sys
+# Check native decoding libraries on each node before creating a W&B run.
+from torchcodec.decoders import VideoDecoder
 import train
 
 # Disable both best and final checkpoint writes without changing train.py.
