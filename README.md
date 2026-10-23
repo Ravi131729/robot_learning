@@ -5,6 +5,21 @@ for the ABC simulation benchmark. The policy consumes three camera views,
 robot state, and a CLIP task embedding, then predicts 30-step action chunks
 with a DiT-style transformer.
 
+## Documentation
+
+For a detailed explanation, start with:
+
+- [Architecture](docs/architecture.md)
+- [Data pipeline](docs/data_pipeline.md)
+- [Training](docs/training.md)
+- [Asynchronous two-GPU pipeline](docs/asynchronous_pipeline.md)
+- [Profiling](docs/profiling.md)
+- [Palmetto and Slurm](docs/palmetto.md)
+- [Ablation plan](docs/ablations.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Third-party code and assets](docs/third_party.md)
+- [Development guide](docs/development.md)
+
 ## Data and ABC integration
 
 The local dataset is expected at:
@@ -87,6 +102,7 @@ Presets are:
 ```text
 debug: depth 1
 small: depth 8
+medium: depth 16
 full:  depth 32
 ```
 

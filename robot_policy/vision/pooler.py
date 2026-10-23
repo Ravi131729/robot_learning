@@ -2,15 +2,14 @@
 
 import jax
 import jax.numpy as jnp
-
 from configs.robot_policy_config import (
     DINO_DIM,
     NUM_POOL_HEADS,
     NUM_POOL_QUERIES,
     POOL_MLP_DIM,
 )
-from robot_policy.common.layers import init_weight, layer_norm
 
+from robot_policy.common.layers import init_weight, layer_norm
 
 def init_pooler(key):
     """Initialize parameters for one camera's vision pooler."""
@@ -33,7 +32,6 @@ def init_pooler(key):
         "ffn_ln_scale": jnp.ones(DINO_DIM),
         "ffn_ln_bias": jnp.zeros(DINO_DIM),
     }
-
 
 def cross_attention_pool(vision_tokens, p):
     """Pool a sequence of vision tokens into learned query tokens."""
@@ -80,7 +78,6 @@ def cross_attention_pool(vision_tokens, p):
     ).reshape(batch_size, NUM_POOL_QUERIES, dim)
 
     return pooled @ p["out_weight"] + p["out_bias"]
-
 
 def vision_pool_block(vision_tokens, p):
     """Apply vision cross-attention pooling followed by an FFN residual."""
