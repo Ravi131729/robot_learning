@@ -47,7 +47,7 @@ train.main()
   --preset medium \
   --batch-size 16 \
   --num-workers 8 \
-  --steps 1 \
+  --steps 100000 \
   --eval-every 0 \
   --val-steps 1 \
   --pipeline-mode async \
