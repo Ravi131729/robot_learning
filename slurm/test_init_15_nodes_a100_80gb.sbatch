@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=robot-init-15nodes
+#SBATCH --job-name=robot-train-15nodes
 #SBATCH --nodes=15
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=a100:2
-#SBATCH --constraint=gpu_a100_80gb
+#SBATCH --constraint=gpu_type_a100_80gb
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=00:30:00
+#SBATCH --time=72:00:00
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
@@ -18,27 +18,31 @@ cd "$HOME/robot_learning"
 
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export PYTHONDONTWRITEBYTECODE=1
-export WANDB_MODE=disabled
+export WANDB_MODE=online
+export WANDB_RUN_GROUP="palmetto-${SLURM_JOB_ID}"
+unset WANDB_RUN_ID
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-# Runs the existing two-GPU setup independently on all 15 nodes.
-# Checks model/optimizer initialization and the first encoded batch.
-# Exits before the first update; no checkpoints, W&B files, or logs.
-# This checks each node's setup, not inter-node communication.
-# sbatch --wait <this-file> returns success only if every task succeeds.
+# Runs 15 independent two-GPU training runs, each with its own W&B run.
+# Stops at the configured step count or the 72-hour Slurm limit.
+# Uses existing W&B credentials; checkpoint writes are disabled in this job.
+# W&B keeps its normal local logging files; Slurm output is discarded.
 
 srun --kill-on-bad-exit=1 python -u -c '
-import jax
+import os
+import sys
 import train
 
-def init_only_step_factory(*factory_args, **factory_kwargs):
-    def init_only_step(*args, **kwargs):
-        jax.block_until_ready((args, kwargs))
-        raise SystemExit(0)
-    return init_only_step
+# Disable both best and final checkpoint writes without changing train.py.
+train.save_checkpoint = lambda *args, **kwargs: None
+sys.argv.extend([
+    "--wandb-run-name",
+    "a100-80gb-job-{}-rank-{}".format(
+        os.environ["SLURM_JOB_ID"], os.environ["SLURM_PROCID"]
+    ),
+])
 
-train.make_batch_train_step = init_only_step_factory
 train.main()
 ' \
   --data-root "$HOME/robot_learning/cache" \
@@ -54,4 +58,8 @@ train.main()
   --encoder-device cuda:0 \
   --policy-device cuda:1 \
   --prefetch-batches 4 \
-  --wandb-mode disabled
+  --timing \
+  --memory \
+  --wandb \
+  --wandb-project robot-policy-ablations \
+  --wandb-mode online
